@@ -3,17 +3,18 @@ import json
 import base64
 import requests
 
-# ---------- Environment ----------
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-GITHUB_REPO = os.environ["GITHUB_REPO"]  # e.g., Motorbike15/VerifyBotHRBRP
+# ---------- Environment Variables ----------
+GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]          # Personal GitHub token with repo write access
+GITHUB_REPO = os.environ["GITHUB_REPO"]            # e.g., Motorbike15/VerifyBotHRBRP
 AUTHORIZED_FILE = os.environ.get("AUTHORIZED_FILE", "authorized_users.json")
 BRANCH = os.environ.get("BRANCH", "main")
-CLIENT_ID = os.environ["CLIENT_ID"]
-CLIENT_SECRET = os.environ["CLIENT_SECRET"]
-REDIRECT_URI = os.environ["REDIRECT_URI"]
+CLIENT_ID = os.environ["CLIENT_ID"]                # Discord Application Client ID
+CLIENT_SECRET = os.environ["CLIENT_SECRET"]        # Discord Application Client Secret
+REDIRECT_URI = os.environ["REDIRECT_URI"]          # Must match Discord redirect URI exactly
 
-# ---------- Helper Functions ----------
+# ---------- GitHub Helpers ----------
 def fetch_github_json():
+    """Fetch the existing authorized_users.json from GitHub"""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{AUTHORIZED_FILE}?ref={BRANCH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     r = requests.get(url, headers=headers)
@@ -21,9 +22,11 @@ def fetch_github_json():
         data = r.json()
         content = base64.b64decode(data["content"]).decode("utf-8")
         return json.loads(content), data["sha"]
+    # If file does not exist, return empty dict
     return {}, None
 
 def push_github_json(content, sha=None):
+    """Push updated JSON to GitHub"""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{AUTHORIZED_FILE}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     payload = {
@@ -45,7 +48,7 @@ def handler(request):
 
     user_id, guild_id = state.split("-")
 
-    # Exchange code for token
+    # Exchange code for access token (Discord expects x-www-form-urlencoded)
     data = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
@@ -54,7 +57,8 @@ def handler(request):
         "redirect_uri": REDIRECT_URI,
         "scope": "guilds.join"
     }
-    token_res = requests.post("https://discord.com/api/oauth2/token", data=data)
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    token_res = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
     if token_res.status_code != 200:
         return {"statusCode": 400, "body": f"Failed to get token: {token_res.text}"}
     access_token = token_res.json().get("access_token")

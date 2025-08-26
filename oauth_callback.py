@@ -1,29 +1,23 @@
-import os
-import json
-import httpx
 from fastapi import FastAPI, Request
+import httpx, json, os
 
 app = FastAPI()
 
-DATA_FILE = "authorized_users.json"  # Stored in your repo
+DATA_FILE = "authorized_users.json"
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-REDIRECT_URI = os.getenv("REDIRECT_URI")  # e.g. https://your-vercel-project.vercel.app/api/oauth_callback
+REDIRECT_URI = os.getenv("REDIRECT_URI")
 
-@app.get("/oauth_callback")
-async def oauth_callback(code: str, state: str):
-    """
-    Receives Discord OAuth2 redirect.
-    `state` contains user_id and guild_id: "<USER_ID>-<GUILD_ID>"
-    """
-    try:
-        user_id_str, guild_id_str = state.split("-")
-        user_id = int(user_id_str)
-        guild_id = int(guild_id_str)
-    except Exception:
-        return {"status": "error", "message": "Invalid state parameter"}
+@app.get("/api/oauth_callback")
+async def oauth_callback(request: Request):
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")  # e.g., "USERID-GUILDID"
+    
+    if not code or not state:
+        return {"status": "error", "message": "Missing code or state"}
 
-    # Exchange code for token
+    user_id, guild_id = map(int, state.split("-"))
+
     data = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
@@ -40,7 +34,7 @@ async def oauth_callback(code: str, state: str):
         if not access_token:
             return {"status": "error", "message": "Failed to get token"}
 
-    # Load existing authorized users
+    # Save user info to authorized_users.json
     try:
         with open(DATA_FILE, "r") as f:
             authorized_users = json.load(f)
@@ -55,14 +49,9 @@ async def oauth_callback(code: str, state: str):
             exists = True
             break
     if not exists:
-        authorized_users.append({
-            "user_id": user_id,
-            "guild_id": guild_id,
-            "token": access_token
-        })
+        authorized_users.append({"user_id": user_id, "guild_id": guild_id, "token": access_token})
 
-    # Save JSON back (push to GitHub in real setup)
     with open(DATA_FILE, "w") as f:
         json.dump(authorized_users, f)
 
-    return {"status": "ok", "message": "Verification complete!"}
+    return {"status": "ok", "message": "Authorization complete!"}

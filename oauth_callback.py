@@ -1,63 +1,69 @@
-from fastapi import FastAPI, Request
-import httpx, json, os
+import os
+import json
+import requests
+from flask import request, redirect
 
-app = FastAPI()
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")
+AUTHORIZED_FILE = os.getenv("AUTHORIZED_FILE", "authorized_users.json")
 
-DATA_FILE = "authorized_users.json"  # This will store authorized users
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-REDIRECT_URI = os.getenv("REDIRECT_URI")  # Same as your redirect URL
-
-@app.get("/api/oauth_callback")
-async def oauth_callback(request: Request):
-    code = request.query_params.get("code")
-    state = request.query_params.get("state")  # "user_id-guild_id"
-
+def handler(req):
+    code = req.args.get("code")
+    state = req.args.get("state")  # contains user_id-guild_id
     if not code or not state:
-        return {"status": "error", "message": "Missing code or state"}
+        return "Missing code or state", 400
 
-    user_id, guild_id = map(int, state.split("-"))
+    user_id, guild_id = state.split("-")
 
-    # Exchange code for token
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-        "scope": "guilds.join"
-    }
+    # 1. Exchange code for access token (verify they authorized)
+    token_res = requests.post(
+        "https://discord.com/api/oauth2/token",
+        data={
+            "client_id": os.getenv("DISCORD_CLIENT_ID"),
+            "client_secret": os.getenv("DISCORD_CLIENT_SECRET"),
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": os.getenv("REDIRECT_URI"),
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post("https://discord.com/api/oauth2/token", data=data)
-        token_data = resp.json()
-        access_token = token_data.get("access_token")
-        if not access_token:
-            return {"status": "error", "message": "Failed to get token"}
+    if token_res.status_code != 200:
+        return f"OAuth failed: {token_res.text}", 400
 
-    # Load or create JSON file
-    try:
-        with open(DATA_FILE, "r") as f:
-            authorized_users = json.load(f)
-    except FileNotFoundError:
-        authorized_users = []
+    # 2. Fetch current authorized_users.json from GitHub
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{AUTHORIZED_FILE}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    res = requests.get(api_url, headers=headers)
 
-    # Add or update user
-    exists = False
-    for u in authorized_users:
-        if u["user_id"] == user_id and u["guild_id"] == guild_id:
-            u["token"] = access_token
-            exists = True
-            break
-    if not exists:
-        authorized_users.append({
-            "user_id": user_id,
-            "guild_id": guild_id,
-            "token": access_token
-        })
+    if res.status_code == 200:
+        content = json.loads(res.text)
+        existing = json.loads(
+            requests.utils.unquote(content["content"])
+            .encode("ascii")
+            .decode("base64")
+        )
+        sha = content["sha"]
+    else:
+        existing = {}
+        sha = None
 
-    # Save back to file
-    with open(DATA_FILE, "w") as f:
-        json.dump(authorized_users, f)
+    # 3. Add this user
+    existing[user_id] = {"guild_id": guild_id}
 
-    return {"status": "ok", "message": "Authorization complete!"}
+    # 4. Push back to GitHub
+    commit_msg = f"Add verified user {user_id}"
+    update_res = requests.put(
+        api_url,
+        headers=headers,
+        json={
+            "message": commit_msg,
+            "content": json.dumps(existing).encode("utf-8").decode("utf-8"),
+            "sha": sha,
+        },
+    )
+
+    if update_res.status_code not in [200, 201]:
+        return f"Failed to update GitHub: {update_res.text}", 500
+
+    return redirect("https://discord.com/channels/@me")  # send them back to Discord
